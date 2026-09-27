@@ -1,0 +1,129 @@
+name: CI
+
+# Typecheck, tests (contract tests included), the ai 5/6/7 matrix, the
+# consumer legs, the lag guard, the upstream source check and the upstream
+# provenance report. Nothing here publishes: release.yml is the only workflow
+# that does, and surface-bump.yml reaches it by dispatch
+# (docs/AUTO-UPDATE-CONTOUR.md).
+#
+# Every action is pinned to a full commit SHA (the tag it was taken from is in
+# the comment): a moved tag must not change what runs here.
+# test/workflows.test.ts fails on an unpinned `uses:`.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Daily: npm can publish a new surface without any commit here.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: gate (typecheck, tests, build, pack, smoke)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.4.0)
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4 (v4.3.0)
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4 (v4.4.0)
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - name: Tests (contract tests against the package's stdio entry included)
+        run: pnpm run test
+      - run: pnpm run build
+      - name: Package lint (publint), tarball contents, type resolution (attw)
+        run: pnpm run lint
+      - run: pnpm run smoke:cjs
+      - run: pnpm run smoke:esm
+
+  matrix:
+    name: ai ${{ matrix.ai }} on node ${{ matrix.node }}
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ai: ["5", "6", "7"]
+        node: ["22", "24"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.4.0)
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4 (v4.3.0)
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4 (v4.4.0)
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - name: Install ai ${{ matrix.ai }} + its @ai-sdk/mcp in a temp copy; typecheck, test, build, CJS + ESM smoke
+        run: node scripts/test-matrix.mjs --ai ${{ matrix.ai }}
+
+  legs:
+    name: consumer legs (unsupported installs fail loudly)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.4.0)
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4 (v4.3.0)
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4 (v4.4.0)
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Packed package in pnpm and npm apps with zod 3.25 / 4.1 and a mismatched ai + @ai-sdk/mcp pair
+        run: node scripts/test-matrix.mjs --legs
+
+  lag-guard:
+    name: lag guard (pinned surface vs npm latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.4.0)
+        with:
+          # Reads two files and asks the npm registry; needs no git credentials.
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4 (v4.4.0)
+        with:
+          node-version: 22
+      - name: Red when the exact pin has been behind npm's latest for more than 24 h
+        run: node scripts/lag-guard.mjs --grace-hours 24
+
+  provenance:
+    # Where the pinned upstream version came from, daily and on every PR, with
+    # the same scripts the surface-bump contour runs before a bump
+    # (docs/AUTO-UPDATE-CONTOUR.md, step 5):
+    #   - source, required: its tag is on the package's main and its release
+    #     workflow created the GitHub Release (red if not: a pin by hand to a
+    #     version npm has but GitHub never released);
+    #   - provenance, advisory here (a warning, never red). The contour runs it
+    #     with --auto: advisory while the package has never published with
+    #     provenance, REQUIRED from its first attested version on.
+    name: upstream source (required) and provenance (advisory)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.4.0)
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4 (v4.4.0)
+        with:
+          node-version: 22
+      - name: Was the pinned @mnemoverse/mcp-memory-server released from its repository (tag on main, GitHub Release)?
+        env:
+          # Public data; the token only lifts the API rate limit.
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/check-upstream-release.mjs
+      - name: Does the pinned @mnemoverse/mcp-memory-server carry SLSA provenance from its release workflow?
+        run: node scripts/check-provenance.mjs --advisory

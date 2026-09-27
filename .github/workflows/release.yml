@@ -1,0 +1,378 @@
+name: release
+
+# Publishes @mnemoverse/ai-sdk to npm from a vX.Y.Z tag, with provenance.
+#
+# Two ways in, both on the TAG itself (never a branch):
+#   - a person pushes the tag:            git push origin v0.1.0
+#   - the surface-bump contour, or a person, dispatches it on the tag:
+#                                         gh workflow run release.yml --ref v0.1.1
+#     (surface-bump.yml does this after pushing the tag. A tag pushed with
+#     GITHUB_TOKEN starts no workflow: such events "will not create a new
+#     workflow run", with workflow_dispatch and repository_dispatch as the
+#     exceptions (docs.github.com, "GITHUB_TOKEN").)
+#
+# Why there is no `workflow_call` trigger. When a reusable workflow runs
+# `npm publish`, npm trusted publishing "checks the calling workflow's name"
+# (docs.npmjs.com/trusted-publishers, Troubleshooting), not the file that
+# publishes. And in a called workflow "the github context is always
+# associated with the caller workflow" (docs.github.com, Reusing workflow
+# configurations), so the provenance would record the caller's github.sha:
+# a contour run that commits the bump and then calls this file would publish
+# the new commit under provenance naming the commit BEFORE it. Dispatched on
+# the tag instead, this file is always the top-level workflow and the tag's
+# commit is always github.sha, so:
+#   - npmjs.com needs ONE trusted publisher: this repository, `release.yml`;
+#   - the provenance names this repository, release.yml, refs/tags/vX.Y.Z
+#     and the tagged commit, and the check after publishing insists on it.
+#
+# Authentication. When the NPM_TOKEN secret exists (the first publish only:
+# trusted publishing is configured on the package's npmjs.com settings page,
+# which exists only once the package does), npm can use it. When it does
+# not, npm trusted publishing (OIDC) is the only way in. Either way the
+# publish job has `id-token: write`, which the provenance signature needs
+# too, and npm 11.20.0 on Node >= 22.14 does the publish (trusted publishing
+# needs npm >= 11.5.1 and Node >= 22.14.0). The npm CLI tries OIDC first,
+# "before falling back to traditional tokens", so once trusted publishing is
+# configured the token goes unused, and the runbook deletes it
+# (docs/RELEASING.md).
+#
+# Four jobs, so that no third-party code ever runs next to a publish
+# credential:
+#
+#   build           contents: read. No OIDC, no secret. Everything that runs
+#                   code from the dependency tree (and the upstream package,
+#                   in process) runs here: install (lifecycle scripts off),
+#                   release check, the gate, pack. It hands on the tarball and
+#                   its sha512 integrity.
+#   publish         id-token: write, and the only job that sees NPM_TOKEN
+#                   (one step). It checks out nothing, installs nothing from
+#                   the lockfile and runs no repository script: setup-node,
+#                   npm 11.20.0 (scripts off), the build job's tarball, its
+#                   integrity recomputed, `npm publish <tgz> --ignore-scripts`.
+#   verify          contents: read. npm serves the version with the build
+#                   job's bytes and with SLSA provenance from this
+#                   repository's release.yml at this tag.
+#   github-release  contents: write. The GitHub Release from the CHANGELOG.
+#
+# Why the split matters: the runner hands ACTIONS_ID_TOKEN_REQUEST_URL and
+# ACTIONS_ID_TOKEN_REQUEST_TOKEN to EVERY step of a job with id-token:
+# write, and every step of a job shares one user, one file system and its
+# background processes. A compromised dev dependency, or a tampered upstream
+# release the contour picked up, running during `pnpm install` or the gate in
+# that job could mint an npm OIDC token for this package (it would match the
+# one trusted publisher, release.yml) or wait for NODE_AUTH_TOKEN. Each job
+# runs on a fresh virtual machine, so nothing the build job ran reaches the
+# publish job. The provenance still names this workflow file at this tag:
+# it is the same run (test/workflows.test.ts holds the publish job to this).
+#
+# Every gate runs before the one irreversible step, `npm publish`:
+#   1. the ref is a vX.Y.Z tag, the checkout is its commit, and that commit
+#      is on main;
+#   2. package.json, the dated CHANGELOG section, the README surface line and
+#      the repository field agree (scripts/release-check.mjs);
+#   3. the gate: typecheck, tests (contract tests included), build, publint,
+#      tarball contents, types, CJS and ESM smoke;
+#   4. the tarball the publish job received is the one the build job packed
+#      (sha512), and it names this package at the tag's version;
+#   5. publish, skipped when npm already serves the version with those bytes
+#      (so a re-run resumes), stopped when it serves other bytes;
+#   6. after publishing: npm serves the version, with those bytes and with
+#      SLSA provenance from this repository's release.yml at this tag.
+# Then the GitHub Release is created from the CHANGELOG section.
+#
+# Supply chain: every action pinned by SHA (test/workflows.test.ts), and no
+# cache restored anywhere in this file (a poisoned cache written by another
+# workflow would reach the published tarball). The one artifact is this
+# run's own tarball, passed from build to publish and checked by digest.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      request:
+        description: "Correlation id, set by surface-bump.yml so it can find this run. Leave empty by hand."
+        required: false
+        default: ""
+
+run-name: release ${{ github.ref_name }}${{ inputs.request && format(' [{0}]', inputs.request) || '' }}
+
+permissions: {}
+
+# One run per tag. A second run for the same tag waits, then finds the
+# version on npm with the same bytes and only re-checks it.
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build ${{ github.ref_name }} (checks, gate, pack; no publish credential)
+    if: github.repository == 'mnemoverse/ai-sdk'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      file: ${{ steps.pack.outputs.file }}
+      integrity: ${{ steps.pack.outputs.integrity }}
+    steps:
+      - name: Refuse anything but a vX.Y.Z tag
+        env:
+          REF: ${{ github.ref }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" != "tag" ] || ! [[ "$REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::release.yml publishes from a vX.Y.Z tag only, and it was started on $REF. Push the tag, or dispatch this workflow ON the tag: gh workflow run release.yml --ref vX.Y.Z"
+            exit 1
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.4.0)
+        with:
+          persist-credentials: false
+          # All of main's history, so the ancestry check below needs no fetch.
+          fetch-depth: 0
+
+      - name: The checkout is the tagged commit, and that commit is on main
+        env:
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          HEAD_SHA="$(git rev-parse HEAD)"
+          TAGGED="$(git rev-parse "refs/tags/$TAG^{commit}")"
+          if [ "$HEAD_SHA" != "$SHA" ] || [ "$TAGGED" != "$SHA" ]; then
+            echo "::error::the checkout ($HEAD_SHA), the tag $TAG ($TAGGED) and the run's commit ($SHA) differ: the tag moved after this run started. Nothing is published."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$SHA" refs/remotes/origin/main; then
+            echo "::error::$TAG ($SHA) is not on main. Only a commit that went through main is published."
+            exit 1
+          fi
+          echo "✓ $TAG is $SHA, on main"
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4 (v4.3.0)
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4 (v4.4.0)
+        with:
+          # No `cache:` here, on purpose (see the header).
+          node-version: 22
+
+      # No dependency lifecycle script runs (pnpm 9 would run esbuild's
+      # postinstall, for one); the gate passes without them.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: The tree is the release it claims (package.json, dated CHANGELOG section, README, repository, pinned surface on npm)
+        env:
+          TAG: ${{ github.ref_name }}
+        run: node scripts/release-check.mjs --tag "$TAG"
+
+      - name: Gate (typecheck, tests with the contract tests, build, publint, tarball, types, CJS and ESM smoke)
+        run: pnpm run gate
+
+      - name: Pack
+        id: pack
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/pack"
+          rm -rf "$OUT" && mkdir -p "$OUT"
+          pnpm pack --pack-destination "$OUT"
+          TGZ="$(ls "$OUT"/*.tgz)"
+          test "$(tar -xzOf "$TGZ" package/package.json | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')" = "${TAG#v}"
+          INTEGRITY="sha512-$(openssl dgst -sha512 -binary "$TGZ" | base64 -w0)"
+          echo "file=$(basename "$TGZ")" >> "$GITHUB_OUTPUT"
+          echo "integrity=$INTEGRITY" >> "$GITHUB_OUTPUT"
+          echo "packed $TGZ ($INTEGRITY)"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4 (v4.6.2)
+        with:
+          name: npm-package
+          path: ${{ runner.temp }}/pack/${{ steps.pack.outputs.file }}
+          if-no-files-found: error
+          # A re-run of this job replaces its own tarball.
+          overwrite: true
+          retention-days: 5
+
+  publish:
+    name: publish ${{ github.ref_name }} to npm (no repository code, no dependency)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # OIDC: npm trusted publishing and the provenance signature. The only
+      # job in this repository that can ask for it; see the header for why it
+      # runs nothing the build job installed.
+      id-token: write
+    steps:
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4 (v4.4.0)
+        with:
+          # No `cache:` here, on purpose (see the header).
+          node-version: 22
+
+      - name: npm 11.20.0 for the publish (trusted publishing needs npm >= 11.5.1 on Node >= 22.14)
+        run: |
+          set -euo pipefail
+          node -e 'const [a,b]=process.versions.node.split(".").map(Number); if (a<22||(a===22&&b<14)) { console.error(`::error::Node ${process.version} is older than 22.14, the minimum for npm trusted publishing`); process.exit(1) }'
+          npm install --global --ignore-scripts --no-audit --no-fund npm@11.20.0
+          test "$(npm --version)" = "11.20.0"
+          echo "node $(node --version), npm $(npm --version)"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4 (v4.3.0)
+        with:
+          name: npm-package
+          path: ${{ runner.temp }}/package
+
+      - name: The tarball is the one the build job gated and packed, for this package at this tag
+        id: tarball
+        env:
+          TAG: ${{ github.ref_name }}
+          FILE: ${{ needs.build.outputs.file }}
+          INTEGRITY: ${{ needs.build.outputs.integrity }}
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/package"
+          if [ "$(ls -A "$DIR")" != "$FILE" ]; then
+            echo "::error::the artifact holds $(ls -A "$DIR" | tr '\n' ' '), not exactly the $FILE the build job packed"
+            exit 1
+          fi
+          TGZ="$DIR/$FILE"
+          GOT="sha512-$(openssl dgst -sha512 -binary "$TGZ" | base64 -w0)"
+          if [ "$GOT" != "$INTEGRITY" ]; then
+            echo "::error::the tarball this job received ($GOT) is not the one the build job packed ($INTEGRITY). Nothing is published."
+            exit 1
+          fi
+          MANIFEST="$RUNNER_TEMP/manifest.json"
+          tar -xzOf "$TGZ" package/package.json > "$MANIFEST"
+          NAME="$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).name" "$MANIFEST")"
+          VERSION="$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).version" "$MANIFEST")"
+          if [ "$NAME" != "@mnemoverse/ai-sdk" ] || [ "$VERSION" != "${TAG#v}" ]; then
+            echo "::error::the tarball is $NAME@$VERSION, not @mnemoverse/ai-sdk@${TAG#v}"
+            exit 1
+          fi
+          echo "tgz=$TGZ" >> "$GITHUB_OUTPUT"
+          echo "✓ $NAME@$VERSION, $INTEGRITY"
+
+      - name: Publish to npm (skipped when npm already serves these exact bytes)
+        env:
+          TAG: ${{ github.ref_name }}
+          TGZ: ${{ steps.tarball.outputs.tgz }}
+          INTEGRITY: ${{ needs.build.outputs.integrity }}
+          # Present only until trusted publishing is configured (the first publish).
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          # No checkout here: nothing of the repository (an .npmrc, a package.json) is in npm's way.
+          cd "$RUNNER_TEMP"
+          VERSION="${TAG#v}"
+          PKG="@mnemoverse/ai-sdk"
+          URL="https://registry.npmjs.org/${PKG//\//%2f}/$VERSION"
+          BODY="$RUNNER_TEMP/npm-version.json"
+          CODE=000
+          for i in 1 2 3; do
+            CODE="$(curl -sS --max-time 20 -o "$BODY" -w '%{http_code}' "$URL" || true)"
+            case "$CODE" in 200|404) break ;; esac
+            echo "attempt $i/3: npm answered $CODE"
+            if [ "$i" -lt 3 ]; then sleep 5; fi
+          done
+          case "$CODE" in
+            404)
+              if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
+                # The token stays in the environment; the file names the variable, npm expands it.
+                NPMRC="$RUNNER_TEMP/publish.npmrc"
+                printf '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}\n' > "$NPMRC"
+                export NPM_CONFIG_USERCONFIG="$NPMRC"
+                echo "::notice::NPM_TOKEN is set: npm tries trusted publishing (OIDC) first and falls back to the token. Delete the secret once trusted publishing is configured for $PKG."
+              else
+                echo "no NPM_TOKEN secret: npm trusted publishing (OIDC) is the only way in"
+              fi
+              npm publish "$TGZ" --provenance --access public --ignore-scripts
+              ;;
+            200)
+              PUBLISHED="$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).dist.integrity" "$BODY")"
+              if [ "$PUBLISHED" != "$INTEGRITY" ]; then
+                echo "::error::npm serves $PKG@$VERSION with $PUBLISHED, and this run packed $INTEGRITY. This checkout is not what npm shipped. Nothing is published; compare the two tarballs."
+                exit 1
+              fi
+              echo "::notice::$PKG@$VERSION is already on npm with the bytes this run packed; the checks after publishing run again"
+              ;;
+            *)
+              echo "::error::could not tell whether npm already has $PKG@$VERSION (last answer: $CODE). Not guessing: run this workflow again on $TAG."
+              exit 1
+              ;;
+          esac
+
+  verify:
+    name: npm serves ${{ github.ref_name }} with these bytes and provenance from release.yml at the tag
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.4.0)
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4 (v4.4.0)
+        with:
+          node-version: 22
+      - name: npm serves the version, with these bytes and with provenance from this repository's release.yml at this tag
+        env:
+          TAG: ${{ github.ref_name }}
+          INTEGRITY: ${{ needs.build.outputs.integrity }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          PKG="$(node -p "require('./package.json').name")"
+          URL="https://registry.npmjs.org/${PKG//\//%2f}/$VERSION"
+          BODY="$RUNNER_TEMP/npm-served.json"
+          # npm answers a publish minutes before it serves the version.
+          DEADLINE=$((SECONDS + 900))
+          while :; do
+            CODE="$(curl -sS --max-time 20 -o "$BODY" -w '%{http_code}' "$URL" || true)"
+            if [ "$CODE" = "200" ] && node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); process.exit(d?.dist?.attestations ? 0 : 1)' "$BODY"; then
+              break
+            fi
+            if [ "$SECONDS" -ge "$DEADLINE" ]; then
+              echo "::error::npm did not serve $PKG@$VERSION with dist.attestations within 15 minutes (last answer: $CODE). If it serves the version without attestations, it was not published with provenance: check the publish log before announcing it."
+              exit 1
+            fi
+            echo "npm answered $CODE (or no attestations yet); waiting"
+            sleep 15
+          done
+          SERVED="$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).dist.integrity" "$BODY")"
+          if [ "$SERVED" != "$INTEGRITY" ]; then
+            echo "::error::npm serves $PKG@$VERSION with $SERVED, not the $INTEGRITY this run packed"
+            exit 1
+          fi
+          node scripts/check-provenance.mjs --self --version "$VERSION"
+
+  github-release:
+    name: GitHub Release from the CHANGELOG section
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.4.0)
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4 (v4.4.0)
+        with:
+          node-version: 22
+      - name: Create the release (skipped when it exists)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "release $TAG exists"
+            exit 0
+          fi
+          node scripts/release-check.mjs --tag "$TAG" --offline --notes "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" --repo "$REPO" --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"

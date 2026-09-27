@@ -1,0 +1,497 @@
+name: surface-bump
+
+# The self-updating contour (docs/AUTO-UPDATE-CONTOUR.md): a new
+# @mnemoverse/mcp-memory-server on npm becomes a published @mnemoverse/ai-sdk
+# release with no person involved, or a red run and one issue that says why.
+#
+#   plan ─► bump ─► gate + matrix (ai 5/6/7 × node 22/24) + legs ─► commit + tag ─► release ─► report
+#     │                         any red ───────────────────────────────────────────────────► report (issue)
+#     └─ nothing to do: green, nothing else runs
+#
+# Triggers, all in ONE concurrency group so two of them can never race each
+# other into two tags:
+#   - workflow_dispatch, sent by the package's release job once npm serves
+#     the new version (inputs.version is a hint; the target is always npm's
+#     latest), or by hand. The upstream token for it needs only "Actions:
+#     write" on this repository. There is deliberately no repository_dispatch
+#     trigger: that endpoint needs "Contents: write", which can also push
+#     commits and v* tags here, and a tag pushed with a personal token starts
+#     release.yml. So a token that can only ask for a run is all upstream holds;
+#   - a schedule, the fallback when a dispatch is lost, the retry of a red run,
+#     and the pickup after a cool-down.
+#
+# GREEN: the bumped files (package.json, CHANGELOG.md, README.md,
+# pnpm-lock.yaml; nothing else, checked) are committed to main, tagged
+# vX.Y.Z and pushed atomically with GITHUB_TOKEN. That push starts no
+# workflow, by GitHub's design, so this run then DISPATCHES release.yml on
+# the tag (a workflow_dispatch sent with GITHUB_TOKEN does start a run),
+# waits for it, and is green only when release.yml is: npm serves the
+# version, with this run's bytes and with provenance from release.yml at the
+# tag. release.yml is the top-level workflow of that run, so npm trusted
+# publishing matches it (one trusted publisher, `release.yml`) and the
+# provenance names the tagged commit. See release.yml's header for why this
+# is not a `workflow_call`.
+#
+# RED: nothing is committed, tagged or published. The report job opens (or
+# comments on) ONE issue titled "surface bump blocked: X.Y.Z" naming the
+# failing jobs, and this run stays red. The next run retries.
+#
+# Where the new upstream version came from, checked in the plan job before
+# anything is bumped:
+#   - SOURCE, always required (scripts/check-upstream-release.mjs): the tag
+#     vX.Y.Z exists in mnemoverse/mcp-memory-server, its commit is on main,
+#     and the package's release workflow created its GitHub Release. An npm
+#     credential alone cannot produce any of these.
+#   - PROVENANCE: ADVISORY (a warning, and a comment on the standing issue
+#     "upstream provenance: @mnemoverse/mcp-memory-server publishes without
+#     attestations") while no version of the package has ever carried
+#     attestations; REQUIRED, by itself, from the first attested version on
+#     (scripts/check-provenance.mjs --auto).
+#   - Registry signatures (`npm audit signatures`): the download is what the
+#     registry signed. Not an authenticity check: the registry signs every
+#     tarball it accepts, whoever published it.
+#
+# Cool-down: a bump waits until the upstream release is some hours old, so
+# a bad release can be noticed and deprecated upstream first. 6 h by default
+# while upstream provenance is advisory, none once it is required; the
+# optional repository variable SURFACE_BUMP_COOLDOWN_HOURS overrides both
+# (scripts/surface-plan.mjs). Keep it under the lag guard's 24 h grace.
+
+on:
+  schedule:
+    # Every six hours: the fallback for a lost dispatch, the retry of a red
+    # run, and the pickup after a cool-down.
+    - cron: "41 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Optional: the upstream version released (a hint, sent by the package's release job; the target is always npm's latest)"
+        required: false
+        default: ""
+
+run-name: surface bump (${{ github.event_name }})
+
+permissions: {}
+
+concurrency:
+  group: surface-bump
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: plan (npm latest vs the pin; upstream source, provenance and signatures)
+    if: github.repository == 'mnemoverse/ai-sdk'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      action: ${{ steps.plan.outputs.action }}
+      target: ${{ steps.plan.outputs.target }}
+      tag: ${{ steps.plan.outputs.tag }}
+      reason: ${{ steps.plan.outputs.reason }}
+      base: ${{ steps.plan.outputs.base }}
+      provenance_mode: ${{ steps.provenance.outputs.mode }}
+      provenance_verified: ${{ steps.provenance.outputs.verified }}
+    steps:
+      # A workflow_dispatch runs the workflow file of the ref it names, and the
+      # upstream dispatch token (Actions: write) can name any branch. This file
+      # on main is the contour; a copy on another branch (an old one without
+      # a check this one has) is refused, red, so the report opens an issue.
+      - name: Run from main only
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::surface-bump runs from main only, and this run was started on $REF. Dispatch it with --ref main."
+            exit 1
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.4.0)
+        with:
+          ref: main
+          persist-credentials: false
+          # The tags, so the plan can tell a tagged version from an untagged one.
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4 (v4.4.0)
+        with:
+          node-version: 22
+
+      - name: Plan
+        id: plan
+        env:
+          DISPATCHED: ${{ inputs.version }}
+          COOLDOWN_HOURS: ${{ vars.SURFACE_BUMP_COOLDOWN_HOURS }}
+        run: |
+          set -euo pipefail
+          node scripts/surface-plan.mjs --json --dispatched "${DISPATCHED:-}" --cooldown-hours "${COOLDOWN_HOURS:-}" > "$RUNNER_TEMP/plan.json"
+          cat "$RUNNER_TEMP/plan.json"
+          {
+            echo "action=$(jq -r '.action' "$RUNNER_TEMP/plan.json")"
+            echo "target=$(jq -r '.target // ""' "$RUNNER_TEMP/plan.json")"
+            echo "tag=$(jq -r '.tag' "$RUNNER_TEMP/plan.json")"
+            echo "reason=$(jq -r '.reason' "$RUNNER_TEMP/plan.json")"
+            echo "base=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
+          echo "### Plan: $(jq -r '.action + ": " + .reason' "$RUNNER_TEMP/plan.json")" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Blocked is red
+        if: steps.plan.outputs.action == 'blocked'
+        env:
+          REASON: ${{ steps.plan.outputs.reason }}
+        run: |
+          echo "::error title=Surface bump blocked::$REASON"
+          exit 1
+
+      - name: Upstream source (required) - tag vX.Y.Z on the package's main, with its GitHub Release
+        if: steps.plan.outputs.action == 'bump'
+        env:
+          TARGET: ${{ steps.plan.outputs.target }}
+          # Public data; the token only lifts the API rate limit.
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/check-upstream-release.mjs --version "$TARGET"
+
+      - name: Upstream provenance (advisory until the package attests, required from then on)
+        id: provenance
+        if: steps.plan.outputs.action == 'bump'
+        env:
+          TARGET: ${{ steps.plan.outputs.target }}
+        run: |
+          set -uo pipefail
+          # The runner's bash starts with -e; the exit code is wanted, not an early exit.
+          set +e
+          node scripts/check-provenance.mjs --auto --version "$TARGET" --json > "$RUNNER_TEMP/provenance.txt"
+          CODE=$?
+          set -e
+          cat "$RUNNER_TEMP/provenance.txt"
+          LAST="$(tail -n 1 "$RUNNER_TEMP/provenance.txt")"
+          echo "mode=$(printf '%s' "$LAST" | jq -r '.mode')" >> "$GITHUB_OUTPUT"
+          echo "verified=$(printf '%s' "$LAST" | jq -r '.verified')" >> "$GITHUB_OUTPUT"
+          exit "$CODE"
+
+      # The registry's signatures: the tarball is what the registry signed. It
+      # says nothing about who published it (the step above and the source
+      # check do), since the registry signs every tarball it accepts.
+      - name: Registry signatures on a clean install of the new version (npm audit signatures)
+        if: steps.plan.outputs.action == 'bump'
+        env:
+          TARGET: ${{ steps.plan.outputs.target }}
+        run: |
+          set -euo pipefail
+          DIR="$(mktemp -d)"
+          cd "$DIR"
+          npm init -y >/dev/null
+          npm install --ignore-scripts --no-audit --no-fund "@mnemoverse/mcp-memory-server@$TARGET"
+          npm audit signatures
+
+  bump:
+    name: bump the pin, the own version, CHANGELOG, README and lockfile
+    needs: plan
+    if: needs.plan.outputs.action == 'bump'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.4.0)
+        with:
+          ref: ${{ needs.plan.outputs.base }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4 (v4.3.0)
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4 (v4.4.0)
+        with:
+          node-version: 22
+      - run: pnpm install --frozen-lockfile
+      - name: node scripts/bump-surface.mjs, then the lockfile
+        id: bump
+        env:
+          TARGET: ${{ needs.plan.outputs.target }}
+        run: |
+          set -euo pipefail
+          node scripts/bump-surface.mjs "$TARGET" --json > "$RUNNER_TEMP/bump.json"
+          cat "$RUNNER_TEMP/bump.json"
+          if [ "$(jq -r '.mode' "$RUNNER_TEMP/bump.json")" != "release" ]; then
+            echo "::error::the bump did not cut a release (mode $(jq -r '.mode' "$RUNNER_TEMP/bump.json")): the plan should have been blocked"
+            exit 1
+          fi
+          pnpm install --no-frozen-lockfile
+          CHANGED="$(git diff --name-only | sort | tr '\n' ' ')"
+          if [ "$CHANGED" != "CHANGELOG.md README.md package.json pnpm-lock.yaml " ]; then
+            echo "::error::a surface bump changes exactly CHANGELOG.md, README.md, package.json and pnpm-lock.yaml; this one changed: $CHANGED"
+            exit 1
+          fi
+          node scripts/lag-guard.mjs
+          echo "version=$(jq -r '.version' "$RUNNER_TEMP/bump.json")" >> "$GITHUB_OUTPUT"
+          git diff --stat
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4 (v4.6.2)
+        with:
+          name: surface-bump
+          path: |
+            package.json
+            CHANGELOG.md
+            README.md
+            pnpm-lock.yaml
+          if-no-files-found: error
+          retention-days: 7
+
+  gate:
+    name: gate on the bumped tree (typecheck, tests with contract tests, build, pack, smoke, release check)
+    needs: [plan, bump]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.4.0)
+        with:
+          ref: ${{ needs.plan.outputs.base }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4 (v4.3.0)
+        with:
+          name: surface-bump
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4 (v4.3.0)
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4 (v4.4.0)
+        with:
+          node-version: 22
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run gate
+      - name: The bumped tree is releasable as its new version
+        env:
+          VERSION: ${{ needs.bump.outputs.version }}
+        run: node scripts/release-check.mjs --tag "v$VERSION"
+
+  matrix:
+    name: ai ${{ matrix.ai }} on node ${{ matrix.node }} (bumped tree)
+    needs: [plan, bump]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        ai: ["5", "6", "7"]
+        node: ["22", "24"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.4.0)
+        with:
+          ref: ${{ needs.plan.outputs.base }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4 (v4.3.0)
+        with:
+          name: surface-bump
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4 (v4.3.0)
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4 (v4.4.0)
+        with:
+          node-version: ${{ matrix.node }}
+      - run: node scripts/test-matrix.mjs --ai ${{ matrix.ai }}
+
+  legs:
+    name: consumer legs (bumped tree)
+    needs: [plan, bump]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.4.0)
+        with:
+          ref: ${{ needs.plan.outputs.base }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4 (v4.3.0)
+        with:
+          name: surface-bump
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4 (v4.3.0)
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4 (v4.4.0)
+        with:
+          node-version: 22
+      - run: node scripts/test-matrix.mjs --legs
+
+  commit:
+    name: commit to main, tag, push (atomic)
+    needs: [plan, bump, gate, matrix, legs]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # The only job in this repository that writes to it.
+      contents: write
+    outputs:
+      tag: ${{ steps.push.outputs.tag }}
+    steps:
+      # This checkout keeps GITHUB_TOKEN for the push below: the one checkout
+      # without persist-credentials: false (test/workflows.test.ts allows
+      # exactly this one).
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.4.0)
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: main has not moved since the plan
+        env:
+          BASE: ${{ needs.plan.outputs.base }}
+        run: |
+          set -euo pipefail
+          if [ "$(git rev-parse HEAD)" != "$BASE" ]; then
+            echo "::error::main moved from $BASE to $(git rev-parse HEAD) during this run. Nothing is committed; the next run bumps from the new main."
+            exit 1
+          fi
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4 (v4.3.0)
+        with:
+          name: surface-bump
+      - name: Commit, tag, push main and the tag together
+        id: push
+        env:
+          TARGET: ${{ needs.plan.outputs.target }}
+          VERSION: ${{ needs.bump.outputs.version }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          CHANGED="$(git status --porcelain | awk '{print $2}' | sort | tr '\n' ' ')"
+          if [ "$CHANGED" != "CHANGELOG.md README.md package.json pnpm-lock.yaml " ]; then
+            echo "::error::the artifact changes more than the four bump files: $CHANGED"
+            exit 1
+          fi
+          TAG="v$VERSION"
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::error::tag $TAG already exists"
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md README.md package.json pnpm-lock.yaml
+          git commit -m "chore(surface): @mnemoverse/mcp-memory-server $TARGET; @mnemoverse/ai-sdk $VERSION" \
+            -m "Automated by the surface-bump contour: gate, contract tests, ai 5/6/7 matrix and consumer legs green on this tree. Run: $RUN_URL"
+          git tag -a "$TAG" -m "@mnemoverse/ai-sdk $VERSION (surface @mnemoverse/mcp-memory-server $TARGET)"
+          git push --atomic origin HEAD:refs/heads/main "refs/tags/$TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "### Pushed $TAG ($(git rev-parse HEAD)) to main" >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    name: publish through release.yml, on the tag
+    needs: [plan, commit]
+    if: >-
+      always() && (
+        needs.commit.result == 'success' ||
+        (needs.plan.result == 'success' && needs.plan.outputs.action == 'release')
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      # Dispatch release.yml and watch its run.
+      actions: write
+    steps:
+      - name: Dispatch release.yml on the tag, and wait for it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.commit.outputs.tag || needs.plan.outputs.tag }}
+          REQUEST: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          gh workflow run release.yml --repo "$REPO" --ref "$TAG" -f request="$REQUEST"
+          ID=""
+          for i in $(seq 1 30); do
+            ID="$(gh run list --repo "$REPO" --workflow release.yml --event workflow_dispatch --limit 30 \
+              --json databaseId,displayTitle \
+              --jq "map(select(.displayTitle | endswith(\"[$REQUEST]\"))) | .[0].databaseId // empty")"
+            if [ -n "$ID" ]; then break; fi
+            sleep 10
+          done
+          if [ -z "$ID" ]; then
+            echo "::error::release.yml was dispatched on $TAG but its run did not appear within 5 minutes"
+            exit 1
+          fi
+          RUN="https://github.com/$REPO/actions/runs/$ID"
+          echo "release.yml run: $RUN"
+          echo "### release.yml: $RUN" >> "$GITHUB_STEP_SUMMARY"
+          # Polled with the run API alone (actions: read), so no other token scope is needed.
+          while :; do
+            # A transient API error is not the release's result: ask again next time round.
+            STATE="$(gh run view "$ID" --repo "$REPO" --json status,conclusion --jq '.status + " " + (.conclusion // "")' || echo "unknown")"
+            case "$STATE" in
+              "completed success") echo "✓ release.yml published $TAG: $RUN"; exit 0 ;;
+              completed*) echo "::error::release.yml ended ${STATE#completed } on $TAG: $RUN"; exit 1 ;;
+            esac
+            sleep 30
+          done
+
+  report:
+    name: report (one issue per blocked version; upstream provenance while advisory)
+    needs: [plan, bump, gate, matrix, legs, commit, release]
+    if: always() && github.repository == 'mnemoverse/ai-sdk'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      issues: write
+    steps:
+      - name: Open, update or close the issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ACTION: ${{ needs.plan.outputs.action }}
+          TARGET: ${{ needs.plan.outputs.target }}
+          TAG: ${{ needs.commit.outputs.tag || needs.plan.outputs.tag }}
+          REASON: ${{ needs.plan.outputs.reason }}
+          PROVENANCE_MODE: ${{ needs.plan.outputs.provenance_mode }}
+          PROVENANCE_VERIFIED: ${{ needs.plan.outputs.provenance_verified }}
+          R_PLAN: ${{ needs.plan.result }}
+          R_BUMP: ${{ needs.bump.result }}
+          R_GATE: ${{ needs.gate.result }}
+          R_MATRIX: ${{ needs.matrix.result }}
+          R_LEGS: ${{ needs.legs.result }}
+          R_COMMIT: ${{ needs.commit.result }}
+          R_RELEASE: ${{ needs.release.result }}
+        run: |
+          set -euo pipefail
+          open_issue() { # exact title → number of the open issue, or nothing
+            gh issue list --repo "$REPO" --state open --search "\"$1\" in:title" --limit 50 --json number,title \
+              --jq "map(select(.title == \"$1\")) | .[0].number // empty"
+          }
+          FAILED=""
+          for pair in "plan:$R_PLAN" "bump:$R_BUMP" "gate:$R_GATE" "matrix:$R_MATRIX" "legs:$R_LEGS" "commit:$R_COMMIT" "release:$R_RELEASE"; do
+            case "${pair#*:}" in failure|cancelled) FAILED="$FAILED ${pair%%:*}" ;; esac
+          done
+          SUBJECT="${TARGET:-${TAG:-unknown version}}"
+          TITLE="surface bump blocked: $SUBJECT"
+          BODY="$RUNNER_TEMP/body.md"
+          if [ -n "$FAILED" ]; then
+            {
+              echo "The surface-bump contour stopped. Nothing was published after the failing step."
+              echo
+              echo "- Run: $RUN_URL"
+              echo "- Plan: ${ACTION:-none} (${REASON:-the plan did not finish})"
+              echo "- Failing job(s):$FAILED"
+              echo "- Results: plan $R_PLAN, bump $R_BUMP, gate $R_GATE, matrix $R_MATRIX, legs $R_LEGS, commit $R_COMMIT, release $R_RELEASE"
+              echo
+              echo "What a person decides, by failing job: **plan** (blocked: finish the named release; no tag on the package's main or no GitHub Release for the version: check where that npm version came from before anything else, it may have been published with a leaked token; provenance required and missing: the same), **gate / matrix / legs** (a new tool to classify, a changed schema, a changed request contract: see the job log), **commit** (main moved, or a push was refused), **release** (see the release.yml run linked in the release job). The next scheduled run retries."
+            } > "$BODY"
+            N="$(open_issue "$TITLE")"
+            if [ -n "$N" ]; then
+              gh issue comment "$N" --repo "$REPO" --body-file "$BODY"
+            else
+              gh issue create --repo "$REPO" --title "$TITLE" --body-file "$BODY"
+            fi
+          elif [ "$ACTION" = "bump" ] || [ "$ACTION" = "release" ]; then
+            N="$(open_issue "$TITLE")"
+            if [ -n "$N" ]; then
+              gh issue close "$N" --repo "$REPO" --comment "Published $TAG in $RUN_URL."
+            fi
+          fi
+          PTITLE="upstream provenance: @mnemoverse/mcp-memory-server publishes without attestations"
+          if [ "$ACTION" = "bump" ] && [ "$PROVENANCE_MODE" = "advisory" ] && [ "$PROVENANCE_VERIFIED" = "false" ]; then
+            echo "::warning title=Upstream provenance::@mnemoverse/mcp-memory-server@$TARGET carries no provenance; the bump went on in advisory mode"
+            printf '%s\n' "@mnemoverse/mcp-memory-server@$TARGET was published without provenance (no dist.attestations), so this contour's check stayed advisory for it: $RUN_URL. It becomes required by itself once any version of the package carries attestations, which needs npm trusted publishing in that package's release workflow." > "$BODY"
+            N="$(open_issue "$PTITLE")"
+            if [ -n "$N" ]; then
+              gh issue comment "$N" --repo "$REPO" --body-file "$BODY"
+            else
+              gh issue create --repo "$REPO" --title "$PTITLE" --body-file "$BODY"
+            fi
+          elif [ "$PROVENANCE_MODE" = "required" ] && [ "$PROVENANCE_VERIFIED" = "true" ]; then
+            N="$(open_issue "$PTITLE")"
+            if [ -n "$N" ]; then
+              gh issue close "$N" --repo "$REPO" --comment "@mnemoverse/mcp-memory-server@$TARGET carries verified provenance, and the check is now required: $RUN_URL"
+            fi
+          fi

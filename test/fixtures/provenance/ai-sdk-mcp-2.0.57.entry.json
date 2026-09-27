@@ -1,0 +1,15 @@
+{
+  "name": "@ai-sdk/mcp",
+  "version": "2.0.57",
+  "dist": {
+    "integrity": "sha512-Ox7mjtaN7Yu4YHOjBFV6+ibeG8vKTwsu3EN6059Tj977uaxJwCLTzm/oSKnR99sQKYCzz86L7mgc9rt+7wtsNw==",
+    "shasum": "e83311e0a5231ae1f1fb4562904d5ffd9abd719d",
+    "tarball": "https://registry.npmjs.org/@ai-sdk/mcp/-/mcp-2.0.57.tgz",
+    "attestations": {
+      "url": "https://registry.npmjs.org/-/npm/v1/attestations/@ai-sdk%2fmcp@2.0.57",
+      "provenance": {
+        "predicateType": "https://slsa.dev/provenance/v1"
+      }
+    }
+  }
+}

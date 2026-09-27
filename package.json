@@ -1,0 +1,98 @@
+{
+  "name": "@mnemoverse/ai-sdk",
+  "version": "0.1.0",
+  "description": "Hosted AI agent memory that learns from outcomes, with shared rooms, for the Vercel AI SDK (ai 5, 6 and 7): the @mnemoverse/mcp-memory-server tools, run in process",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "package.json"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:contract": "vitest run test/contract.test.ts",
+    "test:matrix": "node scripts/test-matrix.mjs",
+    "test:legs": "node scripts/test-matrix.mjs --legs",
+    "smoke:cjs": "node scripts/smoke-cjs.cjs",
+    "smoke:esm": "node scripts/smoke-esm.mjs",
+    "lag-guard": "node scripts/lag-guard.mjs",
+    "provenance": "node scripts/check-provenance.mjs",
+    "lint": "publint --strict && node scripts/check-pack.mjs",
+    "gate": "pnpm run typecheck && pnpm run test && pnpm run build && pnpm run lint && pnpm run smoke:cjs && pnpm run smoke:esm"
+  },
+  "keywords": [
+    "vercel",
+    "ai-sdk",
+    "ai-sdk-tools",
+    "vercel-ai-sdk",
+    "mcp",
+    "agent-memory",
+    "long-term-memory",
+    "memory",
+    "llm",
+    "claude",
+    "openai",
+    "mnemoverse"
+  ],
+  "author": "Mnemoverse <hello@mnemoverse.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/mnemoverse/ai-sdk#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mnemoverse/ai-sdk.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mnemoverse/ai-sdk/issues"
+  },
+  "engines": {
+    "node": ">=22.12"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "peerDependencies": {
+    "@ai-sdk/mcp": "^0.0.35 || ^1.0.85 || ^2.0.57",
+    "ai": ">=5 <8",
+    "zod": "^4.6.5"
+  },
+  "dependencies": {
+    "@mnemoverse/mcp-memory-server": "0.13.0",
+    "@modelcontextprotocol/sdk": "^1.30.0"
+  },
+  "devDependencies": {
+    "@ai-sdk/mcp": "2.0.57",
+    "@arethetypeswrong/cli": "0.18.5",
+    "@types/node": "22.20.4",
+    "ai": "7.0.113",
+    "publint": "0.3.24",
+    "tsup": "8.5.1",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11",
+    "zod": "4.6.5",
+    "zod-3.25": "npm:zod@3.25.76",
+    "zod-4.1": "npm:zod@4.1.13"
+  },
+  "packageManager": "pnpm@9.15.9"
+}
