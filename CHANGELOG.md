@@ -8,6 +8,12 @@ surface version.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-28
+
+Surface: `@mnemoverse/mcp-memory-server` 0.13.0.
+
+The first version published through npm trusted publishing, with no token.
+
 ### Changed
 
 - README: the options and the tool classes are lists instead of wide tables, so they read the same on npm, which cuts off a table wider than its column. No code change.
