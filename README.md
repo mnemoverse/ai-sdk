@@ -120,17 +120,17 @@ The model reads only the text, which is the package's text verbatim:
 
 ## Options
 
-| Option | Default | |
-|---|---|---|
-| `apiKey` | `MNEMOVERSE_API_KEY` | The environment is read only when the property is absent, at call time and never at import. A present `apiKey` that is `undefined` or `''` is refused. It never falls back to a shared key. |
-| `baseUrl` | `MNEMOVERSE_API_URL`, then `https://core.mnemoverse.com/api/v1` | Must be https. Plain http is allowed only for `localhost`, `127.0.0.1` and `[::1]`. A user name or password in the URL is refused. |
-| `domain` | none | Pins the domain tools. See below. |
-| `tools` | `'all'` | `'all'`, or a list of tool names. |
-| `fetch` | `globalThis.fetch` | Used for every API request. |
-| `timeoutMs` | `10000` | Per HTTP request, in whole milliseconds from 1 to 2147483647 (about 24.8 days, the longest a timer can wait). Anything else is refused. |
-| `headers` | none | Sent with every request. `X-Api-Key` and `Authorization` are dropped in any letter case. |
-| `dangerouslyAllowBrowser` | `false` | See the security notes. |
-| `roomApproval` | `true` | ai 6 and 7: the calls that act on a shared room need tool approval. `false` turns it off. ai 5 has no tool approval, so there nothing is set and `true` is refused. See the security notes. |
+Each option below: its default, then what it does.
+
+- **`apiKey`**, default `MNEMOVERSE_API_KEY`. The environment is read only when the property is absent, at call time and never at import. A present `apiKey` that is `undefined` or `''` is refused. It never falls back to a shared key.
+- **`baseUrl`**, default `MNEMOVERSE_API_URL`, then `https://core.mnemoverse.com/api/v1`. Must be https. Plain http is allowed only for `localhost`, `127.0.0.1` and `[::1]`. A user name or password in the URL is refused.
+- **`domain`**, default none. Pins the domain tools. See [Tools and the domain pin](#tools-and-the-domain-pin).
+- **`tools`**, default `'all'`. `'all'`, or a list of tool names.
+- **`fetch`**, default `globalThis.fetch`. Used for every API request.
+- **`timeoutMs`**, default `10000`. Per HTTP request, in whole milliseconds from 1 to 2147483647 (about 24.8 days, the longest a timer can wait). Anything else is refused.
+- **`headers`**, default none. Sent with every request. `X-Api-Key` and `Authorization` are dropped in any letter case.
+- **`dangerouslyAllowBrowser`**, default `false`. See the [security notes](#security-notes).
+- **`roomApproval`**, default `true`. ai 6 and 7: the calls that act on a shared room need tool approval. `false` turns it off. ai 5 has no tool approval, so there nothing is set and `true` is refused. See the [security notes](#security-notes).
 
 `createMnemoverseTools` rejects with `MnemoverseConfigError`, whose `code` says why, when the options cannot work. It does so before anything is sent:
 
@@ -144,12 +144,21 @@ The model reads only the text, which is the package's text verbatim:
 
 ### Tools and the domain pin
 
-| Class | Tools | `'all'` | Under an `xroom:` pin | Under any other pin |
-|---|---|---|---|---|
-| domain | `memory_write`, `memory_read`, `memory_list_recent` | yes | the pin replaces the model's `domain` | the pin replaces the model's `domain` |
-| room-routed | `memory_feedback`, `memory_graph` | yes | the pin replaces the model's `domain` | excluded; naming it throws |
-| account-wide | `memory_stats`, `memory_list_rooms`, `vault_list` | yes | excluded; naming one throws | excluded; naming one throws |
-| room-changing | `memory_create_room`, `memory_invite_to_room`, `memory_join_room` | no, opt-in by name | naming one throws | naming one throws |
+Every tool has one of four classes. The class decides whether `'all'` includes it and what a pinned `domain` does to it.
+
+- **domain**: `memory_write`, `memory_read`, `memory_list_recent`.
+  - In `'all'`: yes.
+  - Under any pin, `xroom:` or not: the pin replaces the model's `domain`.
+- **room-routed**: `memory_feedback`, `memory_graph`.
+  - In `'all'`: yes.
+  - Under an `xroom:` pin: the pin replaces the model's `domain`.
+  - Under any other pin: excluded; naming one throws.
+- **account-wide**: `memory_stats`, `memory_list_rooms`, `vault_list`.
+  - In `'all'`: yes, when nothing is pinned.
+  - Under any pin: excluded; naming one throws.
+- **room-changing**: `memory_create_room`, `memory_invite_to_room`, `memory_join_room`.
+  - In `'all'`: no; opt in by name.
+  - Under any pin: naming one throws.
 
 "Naming it throws" means `MnemoverseConfigError` with code `tool_not_allowed_with_domain`.
 

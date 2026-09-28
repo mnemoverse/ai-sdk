@@ -8,6 +8,10 @@ surface version.
 
 ## [Unreleased]
 
+### Changed
+
+- README: the options and the tool classes are lists instead of wide tables, so they read the same on npm, which cuts off a table wider than its column. No code change.
+
 ## [0.1.0] - 2026-09-27
 
 Surface: `@mnemoverse/mcp-memory-server` 0.13.0.
