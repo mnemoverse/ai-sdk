@@ -197,12 +197,33 @@ async function main() {
   const expected = args.self ? SELF.expected : EXPECTED;
   const version = args.version ?? (args.self ? pkg.version : pkg.dependencies?.[PACKAGE]);
   const encoded = name.replace("/", "%2f");
-  const entry = await getJson(`${REGISTRY}/${encoded}/${version}`);
-  const url = entry?.dist?.attestations?.url;
-  // Only the registry's own attestation endpoint is asked, whatever the document says.
-  const bundle =
-    typeof url === "string" && url.startsWith(`${REGISTRY}/-/npm/v1/attestations/`) ? await getJson(url) : null;
-  const result = evaluate({ name, version, entry, bundle, expected });
+  const read = async () => {
+    const entry = await getJson(`${REGISTRY}/${encoded}/${version}`);
+    const url = entry?.dist?.attestations?.url;
+    // Only the registry's own attestation endpoint is asked, whatever the document says.
+    const bundle =
+      typeof url === "string" && url.startsWith(`${REGISTRY}/-/npm/v1/attestations/`) ? await getJson(url) : null;
+    return { entry, bundle };
+  };
+  let { entry, bundle } = await read();
+  let result = evaluate({ name, version, entry, bundle, expected });
+  // Right after a publish, npm serves the version document, with its
+  // dist.attestations, before its attestation endpoint serves the bundle
+  // (v0.1.1 on 2026-09-28: the document was there, the bundle came minutes
+  // later). For this package's own release (--self), a refusal is re-read
+  // until the bundle arrives or CHECK_PROVENANCE_WAIT_SECONDS (default 600)
+  // pass; a refusal that persists is still a refusal. The upstream checks do
+  // not wait: they read versions published long before.
+  if (args.self && !result.ok) {
+    const waitMs = 1000 * Number(process.env.CHECK_PROVENANCE_WAIT_SECONDS ?? 600);
+    const deadline = Date.now() + waitMs;
+    while (!result.ok && Date.now() < deadline) {
+      console.log(`provenance not readable yet (${result.message}); reading again in 15 s`);
+      await new Promise((resolve) => setTimeout(resolve, 15000));
+      ({ entry, bundle } = await read());
+      result = evaluate({ name, version, entry, bundle, expected });
+    }
+  }
   let mode = args.advisory ? "advisory" : "required";
   let attested = [];
   if (args.auto) {
