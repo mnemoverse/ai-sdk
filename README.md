@@ -11,7 +11,7 @@
 - **Safe by default.** The API key never reaches the model, writes into a shared room need approval on ai 6 and 7, and a tool that a new MCP release adds stays hidden until this package classifies it.
 - **Kept current.** Every MCP release is picked up by an automated bump, tested against ai 5, 6 and 7, and published with npm provenance. A release that adds, removes or renames a tool waits until a person classifies it.
 
-Surface: `@mnemoverse/mcp-memory-server` 0.14.1. [What the surface version means](#versions-own-semver-plus-the-surface-version).
+Surface: `@mnemoverse/mcp-memory-server` 0.14.2. [What the surface version means](#versions-own-semver-plus-the-surface-version).
 
 ## Install
 
