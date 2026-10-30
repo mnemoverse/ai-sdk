@@ -10,6 +10,7 @@ import {
   parseArgs,
   planBump,
   sectionDate,
+  sharedAlignment,
   withChangelogSection,
   withReadmeSurface,
   withSurfaceFolded,
@@ -237,6 +238,27 @@ describe("planBump", () => {
     expect(() => planBump({ pkg: { ...pkg, version: "0.3.0" }, changelog, readme, target: "0.12.1", date: "2026-09-25" })).toThrow(
       /\[0\.3\.0\]/,
     );
+  });
+
+  // mcp-memory-server 0.15.1 raised its SDK range to ^1.32.1; this package
+  // kept ^1.30.0, pnpm installed two SDK copies, and McpServer from one was not
+  // assignable to the other's: every bump from 0.15.1 to 0.17.0 failed the gate.
+  it("takes the surface's @modelcontextprotocol/sdk range, so one copy is installed", () => {
+    const withSdk = { ...pkg, dependencies: { ...pkg.dependencies, "@modelcontextprotocol/sdk": "^1.30.0" } };
+    const surfaceDependencies = { zod: "^4.6.5", "@modelcontextprotocol/sdk": "^1.32.1" };
+    const plan = planBump({ pkg: withSdk, changelog: released, readme, target: "0.11.1", date: "2026-10-01", surfaceDependencies });
+    expect(plan.pkg.dependencies["@modelcontextprotocol/sdk"]).toBe("^1.32.1");
+    expect(plan.aligned).toEqual([{ name: "@modelcontextprotocol/sdk", from: "^1.30.0", to: "^1.32.1" }]);
+    expect(plan.changelog).toContain("- `@modelcontextprotocol/sdk` ^1.32.1 (was ^1.30.0)");
+  });
+
+  it("leaves the SDK range alone when the surface declares the same one or none", () => {
+    const deps = { "@modelcontextprotocol/sdk": "^1.32.1" };
+    expect(sharedAlignment(deps, { "@modelcontextprotocol/sdk": "^1.32.1" })).toEqual([]);
+    expect(sharedAlignment(deps, {})).toEqual([]);
+    expect(sharedAlignment({}, { "@modelcontextprotocol/sdk": "^1.32.1" })).toEqual([]);
+    const plan = planBump({ pkg, changelog: released, readme, target: "0.11.1", date: "2026-10-01" });
+    expect(plan.aligned).toEqual([]);
   });
 
   it("refuses a target that is not newer than the pin", () => {

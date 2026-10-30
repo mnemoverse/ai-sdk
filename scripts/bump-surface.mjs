@@ -13,6 +13,15 @@
  * It edits package.json, CHANGELOG.md and README.md (the surface line) only.
  * Refresh the lockfile afterwards (`pnpm install`), then run the gate.
  *
+ * One range follows the surface: @modelcontextprotocol/sdk. This package
+ * builds the McpServer and the package registers its tools on it, so both
+ * must resolve the SDK to ONE copy; two copies make McpServer two unrelated
+ * types and the build fails. When the new surface version declares a
+ * different SDK range, the bump takes that range (read from the registry
+ * with `npm view`), so pnpm can install a single copy. mcp-memory-server
+ * 0.15.1 raised it to ^1.32.1 while this package kept ^1.30.0, and every
+ * bump from 0.15.1 to 0.17.0 stopped at the gate on exactly that.
+ *
  * Two modes, decided by the CHANGELOG, never by the network:
  *
  *   release  The current own version is RELEASED (its section is dated,
@@ -30,10 +39,14 @@
  * Surface patch → own patch, minor → minor, major → major. (The package treats
  * any change to a request body as a minor.)
  */
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 export const PACKAGE = "@mnemoverse/mcp-memory-server";
+
+/** Dependencies this package shares with the surface by instance, so their ranges follow the surface's. */
+export const SHARED = ["@modelcontextprotocol/sdk"];
 
 /** The Keep a Changelog groups, in the order a section lists them. */
 const GROUPS = ["Added", "Changed", "Deprecated", "Removed", "Fixed", "Security"];
@@ -148,7 +161,7 @@ function splitUnreleased(text) {
  * under `## [version]`, the surface bullet joins their `### Changed` list (or
  * opens one), and `## [Unreleased]` is left empty.
  */
-export function withChangelogSection(input, { version, previous, surface, previousSurface, date }) {
+export function withChangelogSection(input, { version, previous, surface, previousSurface, date, aligned = [] }) {
   // LF throughout: a CRLF checkout (core.autocrlf on Windows) would otherwise
   // leave CR-only remnants where the slicing trims "\n". The file is written
   // back with LF; git normalises on commit either way.
@@ -156,7 +169,8 @@ export function withChangelogSection(input, { version, previous, surface, previo
   if (text.includes(`## [${version}]`)) throw new Error(`CHANGELOG.md already has a [${version}] section`);
   const { head, unreleased, rest } = splitUnreleased(text);
   const bullet = `- Exposes the MCP surface of \`${PACKAGE}\` ${surface} (was ${previousSurface}). See that release's notes for what changed in the tools.`;
-  const entries = mergeEntries(unreleased, `### Changed\n\n${bullet}`);
+  const moved = aligned.map((a) => `- \`${a.name}\` ${a.to} (was ${a.from}), the range ${PACKAGE} ${surface} declares, so both resolve to one copy.`);
+  const entries = mergeEntries(unreleased, `### Changed\n\n${[bullet, ...moved].join("\n")}`);
   const section = `## [${version}] - ${date}\n\nSurface: \`${PACKAGE}\` ${surface}.\n\n${entries}`;
   let out = `${head}\n\n${section}${rest === "" ? "" : `\n${rest}`}`;
   out = out.replace(
@@ -203,8 +217,19 @@ export function withReadmeSurface(input, surface) {
  * The whole bump, pure: what the three files become. `pkg` is package.json's
  * object, `changelog` and `readme` the file texts.
  */
-export function planBump({ pkg, changelog, readme, target, date }) {
+export function sharedAlignment(dependencies, surfaceDependencies) {
+  const aligned = [];
+  for (const name of SHARED) {
+    const from = dependencies?.[name];
+    const to = surfaceDependencies?.[name];
+    if (from !== undefined && to !== undefined && from !== to) aligned.push({ name, from, to });
+  }
+  return aligned;
+}
+
+export function planBump({ pkg, changelog, readme, target, date, surfaceDependencies = {} }) {
   const previousSurface = pkg.dependencies?.[PACKAGE];
+  const aligned = sharedAlignment(pkg.dependencies, surfaceDependencies);
   const kind = bumpKind(previousSurface, target);
   const released = sectionDate(changelog, pkg.version);
   if (released === undefined) throw new Error(`CHANGELOG.md has no [${pkg.version}] section for package.json's version`);
@@ -213,13 +238,16 @@ export function planBump({ pkg, changelog, readme, target, date }) {
   const nextChangelog =
     mode === "fold"
       ? withSurfaceFolded(changelog, { version, surface: target })
-      : withChangelogSection(changelog, { version, previous: pkg.version, surface: target, previousSurface, date });
-  const nextPkg = { ...pkg, version, dependencies: { ...pkg.dependencies, [PACKAGE]: target } };
+      : withChangelogSection(changelog, { version, previous: pkg.version, surface: target, previousSurface, date, aligned });
+  const dependencies = { ...pkg.dependencies, [PACKAGE]: target };
+  for (const a of aligned) dependencies[a.name] = a.to;
+  const nextPkg = { ...pkg, version, dependencies };
   return {
     mode,
     kind,
     previousSurface,
     surface: target,
+    aligned,
     previousVersion: pkg.version,
     version,
     pkg: nextPkg,
@@ -248,13 +276,17 @@ function main() {
     readme: readFileSync(files.readme, "utf8"),
     target,
     date,
+    surfaceDependencies: JSON.parse(
+      execFileSync("npm", ["view", `${PACKAGE}@${target}`, "dependencies", "--json"], { encoding: "utf8" }) || "{}",
+    ),
   });
   const { pkg, changelog, readme, ...summary } = plan;
   if (json) console.log(JSON.stringify(summary));
   else
     console.log(
       `${PACKAGE} ${plan.previousSurface} → ${target} (${plan.kind}); @mnemoverse/ai-sdk ${plan.previousVersion} → ` +
-        `${plan.version} (${plan.mode === "fold" ? "unreleased: folded into it, no release cut" : "release cut"})`,
+        `${plan.version} (${plan.mode === "fold" ? "unreleased: folded into it, no release cut" : "release cut"})` +
+        plan.aligned.map((a) => `; ${a.name} ${a.from} → ${a.to}`).join(""),
     );
   if (dryRun) return;
   writeFileSync(files.pkg, `${JSON.stringify(pkg, null, 2)}\n`);

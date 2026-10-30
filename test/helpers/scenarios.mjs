@@ -73,7 +73,9 @@ export const SCENARIOS = [
     id: "read hit",
     tool: "memory_read",
     args: { query: "editor theme", top_k: 3 },
-    routes: { "POST /memory/read": { json: { items: [item], search_time_ms: 12 } } },
+    // Since mcp-memory-server 0.16.0 an unscoped read names the rooms it did
+    // not search, found or not, so it lists them: one room here, rendered.
+    routes: { "POST /memory/read": { json: { items: [item], search_time_ms: 12 } }, "GET /memory/rooms": { json: [room] } },
   },
   {
     id: "read on an empty store (probes stats and rooms)",
@@ -147,6 +149,7 @@ export const SCENARIOS = [
       "POST /memory/recent": {
         json: { items: [item, { ...item, atom_id: "mem_02", content: "Deploys go to Railway" }], next_cursor: null },
       },
+      "GET /memory/rooms": { json: [] },
     },
   },
   {
