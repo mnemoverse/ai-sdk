@@ -30,6 +30,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { installedSurfaceVersion } from "./versions.mjs";
 
 /** The verified pairs. `tag` is the npm dist-tag each resolves from with --latest. */
 export const MATRIX = {
@@ -57,9 +58,16 @@ export const MATRIX = {
  *            "ok": a clean install.
  *   outcome  what scripts/consumer-probe.mjs must report.
  */
+/** Whether the installed surface converts its own tools/list schemas (mcp-memory-server 0.15.1, #210). */
+export function surfaceReconvertsSchemas(version = installedSurfaceVersion()) {
+  const [a, b, c] = version.split(".").map(Number);
+  return a > 0 || b > 15 || (b === 15 && c >= 1);
+}
+const OLD_ZOD_PNPM = surfaceReconvertsSchemas() ? "ok" : "surface-error";
+
 export const LEGS = [
-  { id: "zod 3.25 (pnpm)", pm: "pnpm", ai: "5.0.265", mcp: "0.0.35", zod: "3.25.76", install: "loud", outcome: "ok" },
-  { id: "zod 4.1 (pnpm)", pm: "pnpm", ai: "6.0.290", mcp: "1.0.85", zod: "4.1.13", install: "loud", outcome: "ok" },
+  { id: "zod 3.25 (pnpm)", pm: "pnpm", ai: "5.0.265", mcp: "0.0.35", zod: "3.25.76", install: "loud", outcome: OLD_ZOD_PNPM },
+  { id: "zod 4.1 (pnpm)", pm: "pnpm", ai: "6.0.290", mcp: "1.0.85", zod: "4.1.13", install: "loud", outcome: OLD_ZOD_PNPM },
   { id: "zod 3.25 (npm)", pm: "npm", ai: "7.0.113", mcp: "2.0.57", zod: "3.25.76", install: "refused", outcome: "surface-error" },
   { id: "ai 5 + @ai-sdk/mcp latest", pm: "pnpm", ai: "5.0.265", mcp: "latest", zod: "4.6.5", install: "ok", outcome: "config-error:incompatible_ai_versions" },
   { id: "control: zod 4 (pnpm)", pm: "pnpm", ai: "6.0.290", mcp: "1.0.85", zod: "4.6.5", install: "ok", outcome: "ok" },
