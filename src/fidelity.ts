@@ -14,6 +14,10 @@
  * server's, and the handler then rejects input the model was never told was
  * invalid. The `zod` peer dependency makes such an install conflict (npm) or
  * warn (pnpm); this check makes it fail loudly when the tools are created.
+ * Since @mnemoverse/mcp-memory-server 0.15.1 the package re-converts its own
+ * tools/list answer with its own SDK copy, so under pnpm (one SDK copy per zod)
+ * the listed schemas stay complete and this check passes; the loss above now
+ * happens where one SDK copy serves both, as npm's hoisting does.
  *
  * The reference is what each of the package's field schemas says about itself
  * through Standard JSON Schema (`~standard.jsonSchema.input`), which is

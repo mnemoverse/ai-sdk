@@ -9,7 +9,7 @@
 - **Drop-in tools.** `createMnemoverseTools()` returns tools for `generateText` and `streamText` on `ai` 5, 6 and 7, from ESM or CommonJS.
 - **The real MCP surface, in process.** The tools are `@mnemoverse/mcp-memory-server`'s own, run inside your process: the same descriptions, schemas and answers as its stdio server and the hosted connector, and nothing copied or converted.
 - **Safe by default.** The API key never reaches the model, writes into a shared room need approval on ai 6 and 7, and a tool that a new MCP release adds stays hidden until this package classifies it.
-- **Kept current.** Every MCP release is picked up by an automated bump, tested against ai 5, 6 and 7, and published with npm provenance. A release that adds, removes or renames a tool waits until a person classifies it.
+- **Kept current.** Every MCP release is picked up by an automated bump, tested against ai 5, 6 and 7, and published with npm provenance. A bump whose tests fail opens an issue and waits for a person, and so does a release that adds, removes or renames a tool.
 
 Surface: `@mnemoverse/mcp-memory-server` 0.15.0. [What the surface version means](#versions-own-semver-plus-the-surface-version).
 
@@ -82,7 +82,7 @@ Two requirements are checked when the tools are created, because the package man
 - **The `ai` / `@ai-sdk/mcp` pair.** A bare `pnpm add @ai-sdk/mcp` installs 2.x even in an ai 5 or ai 6 project, without a peer warning. With ai 5, every tool call would then fail inside the AI SDK and never reach Mnemoverse. Any pair outside the table is refused with `MnemoverseConfigError` (`incompatible_ai_versions`), and the message names the install that fixes it.
 - **zod `^4.6.5`,** the range `@mnemoverse/mcp-memory-server` declares for its tool schemas. The MCP server that runs in your process converts those schemas to JSON Schema with the zod your install gives `@modelcontextprotocol/sdk`. An older zod (3.25, 4.0, 4.1, 4.2) silently drops the descriptions or the limits the model should see. `zod` is therefore a peer dependency: npm refuses a conflicting install, and pnpm warns about it. If the schemas are degraded anyway, creating the tools fails with `MnemoverseSurfaceError`.
 
-It works from ESM and from CommonJS (`require(esm)`). `SERVER_INSTRUCTIONS` names every tool, including the room tools that are exposed only on request.
+It works from ESM and from CommonJS (`require(esm)`). `SERVER_INSTRUCTIONS` is the server's own text: it covers memory, rooms as `domain` addresses and Vault aliases, but does not name the room tools, which are exposed only on request. Its last sentence refers to the server's `setup_memory` prompt, which MCP clients offer; this package exposes tools, not prompts, so put your memory rules in your own system prompt.
 
 ## How it works
 

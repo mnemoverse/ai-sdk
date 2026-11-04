@@ -39,7 +39,17 @@ export const MATRIX = {
 };
 
 /**
- * Consumer installs that must fail loudly (and two that must work).
+ * Consumer installs that must fail loudly (and those that must work).
+ *
+ * The two pnpm legs with an old zod used to fail at tool creation: the
+ * in-process server converted the package's schemas with the SDK copy pnpm
+ * pairs with the application's zod, and lost descriptions and limits. Since
+ * @mnemoverse/mcp-memory-server 0.15.1 (schema-dialect, #210) the package
+ * re-converts its tools/list answer with its own SDK copy, paired with its own
+ * zod, so under pnpm the model gets the full schemas: the install still warns
+ * about the unmet peer, and the tools work (checked 2026-11-04 on 0.17.0 by
+ * printing the listed memory_read schema). npm hoists one SDK next to the
+ * application's zod for both, so the npm leg still fails loudly.
  *
  *   install  "loud": pnpm must warn about the unmet zod peer (or refuse);
  *            "refused": npm must refuse (ERESOLVE), then it is retried with
@@ -48,8 +58,8 @@ export const MATRIX = {
  *   outcome  what scripts/consumer-probe.mjs must report.
  */
 export const LEGS = [
-  { id: "zod 3.25 (pnpm)", pm: "pnpm", ai: "5.0.265", mcp: "0.0.35", zod: "3.25.76", install: "loud", outcome: "surface-error" },
-  { id: "zod 4.1 (pnpm)", pm: "pnpm", ai: "6.0.290", mcp: "1.0.85", zod: "4.1.13", install: "loud", outcome: "surface-error" },
+  { id: "zod 3.25 (pnpm)", pm: "pnpm", ai: "5.0.265", mcp: "0.0.35", zod: "3.25.76", install: "loud", outcome: "ok" },
+  { id: "zod 4.1 (pnpm)", pm: "pnpm", ai: "6.0.290", mcp: "1.0.85", zod: "4.1.13", install: "loud", outcome: "ok" },
   { id: "zod 3.25 (npm)", pm: "npm", ai: "7.0.113", mcp: "2.0.57", zod: "3.25.76", install: "refused", outcome: "surface-error" },
   { id: "ai 5 + @ai-sdk/mcp latest", pm: "pnpm", ai: "5.0.265", mcp: "latest", zod: "4.6.5", install: "ok", outcome: "config-error:incompatible_ai_versions" },
   { id: "control: zod 4 (pnpm)", pm: "pnpm", ai: "6.0.290", mcp: "1.0.85", zod: "4.6.5", install: "ok", outcome: "ok" },

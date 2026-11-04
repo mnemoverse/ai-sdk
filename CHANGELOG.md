@@ -8,6 +8,11 @@ surface version.
 
 ## [Unreleased]
 
+### Fixed
+
+- The `@ai-sdk/mcp` peer range for ai 5 is `>=0.0.35 <0.1.0`: `^0.0.35` admitted exactly 0.0.35, so `@ai-sdk/mcp@ai-v5` (0.0.43 on 2026-11-03), which the README tells ai 5 users to install, was an unmet peer.
+- README: `SERVER_INSTRUCTIONS` does not name the room tools (the README said it did), and its last sentence refers to an MCP prompt this package does not expose. "Kept current" now says what happens when a bump's tests fail.
+
 ## [0.3.0] - 2026-10-06
 
 Surface: `@mnemoverse/mcp-memory-server` 0.15.0.
