@@ -39,7 +39,17 @@ export const MATRIX = {
 };
 
 /**
- * Consumer installs that must fail loudly (and two that must work).
+ * Consumer installs that must fail loudly (and those that must work).
+ *
+ * The two pnpm legs with an old zod used to fail at tool creation: the
+ * in-process server converted the package's schemas with the SDK copy pnpm
+ * pairs with the application's zod, and lost descriptions and limits. Since
+ * @mnemoverse/mcp-memory-server 0.15.1 (schema-dialect, #210) the package
+ * re-converts its tools/list answer with its own SDK copy, paired with its own
+ * zod, so under pnpm the model gets the full schemas: the install still warns
+ * about the unmet peer, and the tools work (checked 2026-11-04 on 0.17.0 by
+ * printing the listed memory_read schema). npm hoists one SDK next to the
+ * application's zod for both, so the npm leg still fails loudly.
  *
  *   install  "loud": pnpm must warn about the unmet zod peer (or refuse);
  *            "refused": npm must refuse (ERESOLVE), then it is retried with
@@ -47,9 +57,29 @@ export const MATRIX = {
  *            "ok": a clean install.
  *   outcome  what scripts/consumer-probe.mjs must report.
  */
+/** The exact surface version package.json pins: what the packed tarball depends on. The legs job does not install the repository, so nothing is read from node_modules. */
+export function pinnedSurfaceVersion() {
+  const pkg = JSON.parse(readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8"));
+  return pkg.dependencies["@mnemoverse/mcp-memory-server"];
+}
+
+/** Whether the pinned surface converts its own tools/list schemas (mcp-memory-server 0.15.1, #210). */
+export function surfaceReconvertsSchemas(version = pinnedSurfaceVersion()) {
+  const [a, b, c] = version.split(".").map(Number);
+  return a > 0 || b > 15 || (b === 15 && c >= 1);
+}
+/**
+ * What a leg must report. "old-zod-pnpm" is resolved here, when the legs run,
+ * not at import: the matrix jobs load this file before anything is installed.
+ */
+export function expectedOutcome(leg, reconverts = () => surfaceReconvertsSchemas()) {
+  if (leg.outcome !== "old-zod-pnpm") return leg.outcome;
+  return reconverts() ? "ok" : "surface-error";
+}
+
 export const LEGS = [
-  { id: "zod 3.25 (pnpm)", pm: "pnpm", ai: "5.0.265", mcp: "0.0.35", zod: "3.25.76", install: "loud", outcome: "surface-error" },
-  { id: "zod 4.1 (pnpm)", pm: "pnpm", ai: "6.0.290", mcp: "1.0.85", zod: "4.1.13", install: "loud", outcome: "surface-error" },
+  { id: "zod 3.25 (pnpm)", pm: "pnpm", ai: "5.0.265", mcp: "0.0.35", zod: "3.25.76", install: "loud", outcome: "old-zod-pnpm" },
+  { id: "zod 4.1 (pnpm)", pm: "pnpm", ai: "6.0.290", mcp: "1.0.85", zod: "4.1.13", install: "loud", outcome: "old-zod-pnpm" },
   { id: "zod 3.25 (npm)", pm: "npm", ai: "7.0.113", mcp: "2.0.57", zod: "3.25.76", install: "refused", outcome: "surface-error" },
   { id: "ai 5 + @ai-sdk/mcp latest", pm: "pnpm", ai: "5.0.265", mcp: "latest", zod: "4.6.5", install: "ok", outcome: "config-error:incompatible_ai_versions" },
   { id: "control: zod 4 (pnpm)", pm: "pnpm", ai: "6.0.290", mcp: "1.0.85", zod: "4.6.5", install: "ok", outcome: "ok" },
@@ -183,7 +213,8 @@ function runLegs({ keep }) {
   try {
     for (const leg of LEGS) {
       const dir = mkdtempSync(join(tmpdir(), "mnemoverse-ai-sdk-leg-"));
-      const row = { leg: leg.id, install: "-", outcome: "-", expected: `${leg.install} / ${leg.outcome}` };
+      const want = expectedOutcome(leg);
+      const row = { leg: leg.id, install: "-", outcome: "-", expected: `${leg.install} / ${want}` };
       let failed = false;
       try {
         writeFileSync(
@@ -236,9 +267,9 @@ function runLegs({ keep }) {
           row.versions = Object.entries(probe.versions ?? {})
             .map(([k, v]) => `${k} ${v}`)
             .join(", ");
-          if (probe.outcome !== leg.outcome) {
+          if (probe.outcome !== want) {
             failed = true;
-            console.error(`\n--- ${leg.id}: expected ${leg.outcome}, got ${probe.outcome} ---\n${probe.detail ?? ""}`);
+            console.error(`\n--- ${leg.id}: expected ${want}, got ${probe.outcome} ---\n${probe.detail ?? ""}`);
           }
         } else if (!failed) {
           failed = true;
