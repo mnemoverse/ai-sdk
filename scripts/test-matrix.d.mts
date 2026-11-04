@@ -1,3 +1,4 @@
+export declare function pinnedSurfaceVersion(): string;
 export declare function surfaceReconvertsSchemas(version?: string): boolean;
 export declare function expectedOutcome(leg: { outcome: string }, reconverts?: () => boolean): string;
 export declare const MATRIX: Record<string, { ai: string; mcp: string; aiTag: string; mcpTag: string }>;

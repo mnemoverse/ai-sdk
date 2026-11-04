@@ -30,7 +30,6 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { installedSurfaceVersion } from "./versions.mjs";
 
 /** The verified pairs. `tag` is the npm dist-tag each resolves from with --latest. */
 export const MATRIX = {
@@ -58,8 +57,14 @@ export const MATRIX = {
  *            "ok": a clean install.
  *   outcome  what scripts/consumer-probe.mjs must report.
  */
-/** Whether the installed surface converts its own tools/list schemas (mcp-memory-server 0.15.1, #210). */
-export function surfaceReconvertsSchemas(version = installedSurfaceVersion()) {
+/** The exact surface version package.json pins: what the packed tarball depends on. The legs job does not install the repository, so nothing is read from node_modules. */
+export function pinnedSurfaceVersion() {
+  const pkg = JSON.parse(readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8"));
+  return pkg.dependencies["@mnemoverse/mcp-memory-server"];
+}
+
+/** Whether the pinned surface converts its own tools/list schemas (mcp-memory-server 0.15.1, #210). */
+export function surfaceReconvertsSchemas(version = pinnedSurfaceVersion()) {
   const [a, b, c] = version.split(".").map(Number);
   return a > 0 || b > 15 || (b === 15 && c >= 1);
 }
