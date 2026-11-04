@@ -63,11 +63,18 @@ export function surfaceReconvertsSchemas(version = installedSurfaceVersion()) {
   const [a, b, c] = version.split(".").map(Number);
   return a > 0 || b > 15 || (b === 15 && c >= 1);
 }
-const OLD_ZOD_PNPM = surfaceReconvertsSchemas() ? "ok" : "surface-error";
+/**
+ * What a leg must report. "old-zod-pnpm" is resolved here, when the legs run,
+ * not at import: the matrix jobs load this file before anything is installed.
+ */
+export function expectedOutcome(leg, reconverts = () => surfaceReconvertsSchemas()) {
+  if (leg.outcome !== "old-zod-pnpm") return leg.outcome;
+  return reconverts() ? "ok" : "surface-error";
+}
 
 export const LEGS = [
-  { id: "zod 3.25 (pnpm)", pm: "pnpm", ai: "5.0.265", mcp: "0.0.35", zod: "3.25.76", install: "loud", outcome: OLD_ZOD_PNPM },
-  { id: "zod 4.1 (pnpm)", pm: "pnpm", ai: "6.0.290", mcp: "1.0.85", zod: "4.1.13", install: "loud", outcome: OLD_ZOD_PNPM },
+  { id: "zod 3.25 (pnpm)", pm: "pnpm", ai: "5.0.265", mcp: "0.0.35", zod: "3.25.76", install: "loud", outcome: "old-zod-pnpm" },
+  { id: "zod 4.1 (pnpm)", pm: "pnpm", ai: "6.0.290", mcp: "1.0.85", zod: "4.1.13", install: "loud", outcome: "old-zod-pnpm" },
   { id: "zod 3.25 (npm)", pm: "npm", ai: "7.0.113", mcp: "2.0.57", zod: "3.25.76", install: "refused", outcome: "surface-error" },
   { id: "ai 5 + @ai-sdk/mcp latest", pm: "pnpm", ai: "5.0.265", mcp: "latest", zod: "4.6.5", install: "ok", outcome: "config-error:incompatible_ai_versions" },
   { id: "control: zod 4 (pnpm)", pm: "pnpm", ai: "6.0.290", mcp: "1.0.85", zod: "4.6.5", install: "ok", outcome: "ok" },
@@ -201,7 +208,8 @@ function runLegs({ keep }) {
   try {
     for (const leg of LEGS) {
       const dir = mkdtempSync(join(tmpdir(), "mnemoverse-ai-sdk-leg-"));
-      const row = { leg: leg.id, install: "-", outcome: "-", expected: `${leg.install} / ${leg.outcome}` };
+      const want = expectedOutcome(leg);
+      const row = { leg: leg.id, install: "-", outcome: "-", expected: `${leg.install} / ${want}` };
       let failed = false;
       try {
         writeFileSync(
@@ -254,9 +262,9 @@ function runLegs({ keep }) {
           row.versions = Object.entries(probe.versions ?? {})
             .map(([k, v]) => `${k} ${v}`)
             .join(", ");
-          if (probe.outcome !== leg.outcome) {
+          if (probe.outcome !== want) {
             failed = true;
-            console.error(`\n--- ${leg.id}: expected ${leg.outcome}, got ${probe.outcome} ---\n${probe.detail ?? ""}`);
+            console.error(`\n--- ${leg.id}: expected ${want}, got ${probe.outcome} ---\n${probe.detail ?? ""}`);
           }
         } else if (!failed) {
           failed = true;

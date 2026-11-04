@@ -4,7 +4,7 @@
  * schemas (#210), so those installs work; below it they fail loudly.
  */
 import { describe, expect, it } from "vitest";
-import { LEGS, surfaceReconvertsSchemas } from "../scripts/test-matrix.mjs";
+import { expectedOutcome, LEGS, surfaceReconvertsSchemas } from "../scripts/test-matrix.mjs";
 
 describe("surfaceReconvertsSchemas", () => {
   it("is false below 0.15.1 and true from it", () => {
@@ -20,8 +20,15 @@ describe("consumer legs", () => {
   it("the npm leg with an old zod still expects a loud surface error", () => {
     expect(LEGS.find((l) => l.id === "zod 3.25 (npm)")?.outcome).toBe("surface-error");
   });
-  it("the two pnpm legs with an old zod follow the installed surface", () => {
-    const want = surfaceReconvertsSchemas() ? "ok" : "surface-error";
-    for (const id of ["zod 3.25 (pnpm)", "zod 4.1 (pnpm)"]) expect(LEGS.find((l) => l.id === id)?.outcome).toBe(want);
+  it("the two pnpm legs with an old zod follow the surface, resolved when the legs run", () => {
+    for (const id of ["zod 3.25 (pnpm)", "zod 4.1 (pnpm)"]) {
+      const leg = LEGS.find((l) => l.id === id)!;
+      expect(expectedOutcome(leg, () => true)).toBe("ok");
+      expect(expectedOutcome(leg, () => false)).toBe("surface-error");
+    }
+  });
+  it("loading the matrix does not read the installed surface", async () => {
+    // the matrix jobs import the file before installing anything
+    expect(LEGS.every((l) => typeof l.outcome === "string")).toBe(true);
   });
 });
