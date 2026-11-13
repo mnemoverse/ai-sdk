@@ -8,6 +8,14 @@ surface version.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-13
+
+Surface: `@mnemoverse/mcp-memory-server` 0.18.0.
+
+### Changed
+
+- Exposes the MCP surface of `@mnemoverse/mcp-memory-server` 0.18.0 (was 0.17.2). See that release's notes for what changed in the tools.
+
 ## [0.4.2] - 2026-11-11
 
 Surface: `@mnemoverse/mcp-memory-server` 0.17.2.
@@ -145,7 +153,8 @@ The first release.
   - consumer legs: the packed package in pnpm and npm apps with zod 3.25 and 4.1, and with ai 5 next to the latest `@ai-sdk/mcp`, must each fail loudly at install and at creation, next to a supported pnpm and npm install;
   - CJS and ESM smoke tests.
 
-[Unreleased]: https://github.com/mnemoverse/ai-sdk/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/mnemoverse/ai-sdk/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/mnemoverse/ai-sdk/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/mnemoverse/ai-sdk/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/mnemoverse/ai-sdk/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/mnemoverse/ai-sdk/compare/v0.3.0...v0.4.0

@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@mnemoverse/mcp-memory-server':
-        specifier: 0.17.2
-        version: 0.17.2
+        specifier: 0.18.0
+        version: 0.18.0
       '@modelcontextprotocol/sdk':
         specifier: ^1.32.1
         version: 1.32.2(zod@4.6.5)
@@ -270,8 +270,8 @@ packages:
   '@loaderkit/resolve@1.0.6':
     resolution: {integrity: sha512-G8FdIoF5CypfwmD9rl8BXod5HDn8JqB0CCNBXDTaRZ+yRYhARrrSToX1zg1zy9jX3zLqigsELwhT4gNtkdQAUg==}
 
-  '@mnemoverse/mcp-memory-server@0.17.2':
-    resolution: {integrity: sha512-vPMSV3pKFyxGyOL51/x1CokHR2epusHm9o/Eauxlo1eYj0G2EpSQDyvqKdc/jJrnEBP9YyfxOdTKBiyiRCgvnQ==}
+  '@mnemoverse/mcp-memory-server@0.18.0':
+    resolution: {integrity: sha512-P9uXEz00oMHjm5QrblQ6bIQEvDrVDItRO/pdtTLtUizF0piVGDJdRKir1rUmQZo1IPvhY/nvfZxjUjt9Jd5/fA==}
     engines: {node: '>=18'}
     hasBin: true
 
@@ -1703,7 +1703,7 @@ snapshots:
     dependencies:
       '@braidai/lang': 1.1.2
 
-  '@mnemoverse/mcp-memory-server@0.17.2':
+  '@mnemoverse/mcp-memory-server@0.18.0':
     dependencies:
       '@modelcontextprotocol/sdk': 1.32.2(zod@4.6.5)
       zod: 4.6.5
